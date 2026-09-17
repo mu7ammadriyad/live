@@ -1,9 +1,12 @@
 import puppeteer from 'puppeteer';
+import { spawn } from 'child_process';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
 
-const FPS_TARGET = 30;
+const STREAM_KEY = process.env.YOUTUBE_STREAM_KEY || "YOUR_STREAM_KEY_HERE";
+const RTMP_DESTINATION = `rtmp://a.rtmp.youtube.com/live2/${STREAM_KEY}`;
+const FPS = 30;
 
 function startLocalServer() {
     return new Promise((resolve) => {
@@ -21,23 +24,24 @@ function startLocalServer() {
     });
 }
 
-async function runSimulation() {
-    console.log("==================================================");
-    console.log("🔬 بدء محاكاة فحص سرعة الفريمات (CDP Screencast)...");
-    console.log("==================================================");
+async function startLiveStream() {
+    console.log("==========================================");
+    console.log("🚀 بدء محرك البث اللحظي (CDP Native Pipe)...");
+    console.log("==========================================");
 
     const server = await startLocalServer();
-    
-    // إضافة أوامر منع الخنق (Anti-Throttling Flags)
+    const port = server.address().port;
+
+    console.log(`1. تشغيل المتصفح الخفي (بمنع الخنق)...`);
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
             '--no-sandbox', 
-            '--disable-setuid-sandbox', 
-            '--disable-dev-shm-usage', 
-            '--disable-gpu', 
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
             '--use-gl=swiftshader',
-            '--disable-background-timer-throttling',
+            '--disable-background-timer-throttling', // أوامر لمنع 1 FPS
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding'
         ]
@@ -45,51 +49,101 @@ async function runSimulation() {
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: 1920 });
+    page.on('console', msg => console.log(`[Browser]: ${msg.text()}`));
     
-    await page.goto(`http://127.0.0.1:${server.address().port}/scene.html`, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => window.renderStatus === 'ready', { timeout: 120000 });
+    console.log("2. فتح صفحة المشهد...");
+    await page.goto(`http://127.0.0.1:${port}/scene.html`, { 
+        waitUntil: 'domcontentloaded',
+        timeout: 120000 
+    });
 
-    // تشغيل حلقة العرض في المتصفح
+    await page.waitForFunction(() => window.renderStatus === 'ready', { timeout: 120000 });
+    console.log("✓ تم تجهيز الكانفاس والمشهد!");
+
+    const audioBase64 = await page.evaluate(() => window.__ofoqAudioWavBase64);
+    const hasAudio = !!audioBase64;
+    if (hasAudio) {
+        fs.writeFileSync('temp_live_audio.wav', Buffer.from(audioBase64, 'base64'));
+        console.log("✓ تم استخراج ملف الصوت للمزامنة.");
+    }
+
+    console.log("3. تجهيز خط أنابيب FFmpeg...");
+    const ffmpegArgs = [
+        '-y',
+        '-loglevel', 'warning',
+        
+        // استقبال صور JPEG متتابعة من الـ Pipe
+        '-f', 'image2pipe',
+        '-vcodec', 'mjpeg',
+        '-framerate', String(FPS),
+        '-i', '-', 
+
+        // استقبال الصوت بتكرار لا نهائي
+        ...(hasAudio ? ['-re', '-stream_loop', '-1', '-i', 'temp_live_audio.wav'] : []),
+        
+        '-map', '0:v:0',
+        ...(hasAudio ? ['-map', '1:a:0'] : []),
+
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'zerolatency',
+        '-b:v', '3000k',
+        '-maxrate', '3500k',
+        '-bufsize', '7000k',
+        '-pix_fmt', 'yuv420p',
+        '-g', String(FPS * 2),
+        
+        ...(hasAudio ? ['-c:a', 'aac', '-b:a', '128k', '-ar', '44100'] : []),
+        
+        '-f', 'flv',
+        RTMP_DESTINATION
+    ];
+
+    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+
+    ffmpeg.stderr.on('data', (d) => {
+        const msg = d.toString();
+        if (msg.includes('frame=')) {
+            process.stdout.write(`\r[Live RTMP]: ${msg.trim()}`);
+        } else {
+            console.log(`[FFmpeg]: ${msg.trim()}`);
+        }
+    });
+
+    // تشغيل الكانفاس داخل المتصفح
     await page.evaluate(() => {
         if (typeof startPreviewLoop === 'function') startPreviewLoop();
     });
 
-    // ==========================================
-    // السر: استخدام بروتوكول CDP لسحب الفريمات
-    // ==========================================
+    console.log("4. ربط المتصفح بـ FFmpeg وبدء البث اللحظي...");
+    
+    // سحب الفريمات باستخدام الـ CDP (سريع جداً)
     const client = await page.target().createCDPSession();
     await client.send('Page.startScreencast', { 
         format: 'jpeg', 
         quality: 85,
-        everyNthFrame: 1 // التقاط كل فريم يتم رسمه
+        everyNthFrame: 1 
     });
 
-    let framesReceived = 0;
-    let totalBytes = 0;
-
-    // استلام الفريمات اللحظية من محرك كروم الداخلي
     client.on('Page.screencastFrame', async (frameObject) => {
-        framesReceived++;
-        totalBytes += Buffer.from(frameObject.data, 'base64').length;
-        
-        // إشعار المتصفح باستلام الفريم ليرسل الذي يليه (مهم جداً)
+        if (ffmpeg.stdin.writable) {
+            // تحويل Base64 إلى Buffer وضخه مباشرة
+            ffmpeg.stdin.write(Buffer.from(frameObject.data, 'base64'));
+        }
+        // إشعار للاستلام الفريم القادم
         await client.send('Page.screencastFrameAck', { sessionId: frameObject.sessionId }).catch(()=>{});
     });
 
-    let secondsPassed = 0;
-    const statsInterval = setInterval(() => {
-        secondsPassed++;
-        const kbps = (totalBytes / 1024).toFixed(2);
-        console.log(`[ثانية ${String(secondsPassed).padStart(2, '0')}] 📊 الفريمات المستلمة: ${framesReceived} FPS | حجم البيانات: ${kbps} KB/s`);
-        
-        framesReceived = 0;
-        totalBytes = 0;
-
-        if (secondsPassed >= 20) {
-            console.log("\n✅ انتهى الاختبار بنجاح! المتصفح قادر على ضخ الفريمات بشكل ممتاز.");
-            process.exit(0);
-        }
-    }, 1000);
+    process.on('SIGINT', () => {
+        console.log("\nإيقاف البث...");
+        ffmpeg.stdin.end();
+        browser.close();
+        server.close();
+        process.exit(0);
+    });
 }
 
-runSimulation();
+startLiveStream().catch((err) => {
+    console.error("فشل تشغيل البث:", err);
+    process.exit(1);
+});
