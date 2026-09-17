@@ -26,13 +26,13 @@ function startLocalServer() {
 
 async function startLiveStream() {
     console.log("==========================================");
-    console.log("🚀 بدء محرك البث اللحظي (CDP Native Pipe)...");
+    console.log("🚀 بدء محرك البث اللحظي المطور (Clean Canvas & Perfect Sync)...");
     console.log("==========================================");
 
     const server = await startLocalServer();
     const port = server.address().port;
 
-    console.log(`1. تشغيل المتصفح الخفي (بمنع الخنق)...`);
+    console.log(`1. تشغيل المتصفح الخفي...`);
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
@@ -41,7 +41,7 @@ async function startLiveStream() {
             '--disable-dev-shm-usage',
             '--disable-gpu',
             '--use-gl=swiftshader',
-            '--disable-background-timer-throttling', // أوامر لمنع 1 FPS
+            '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding'
         ]
@@ -72,13 +72,11 @@ async function startLiveStream() {
         '-y',
         '-loglevel', 'warning',
         
-        // استقبال صور JPEG متتابعة من الـ Pipe
         '-f', 'image2pipe',
         '-vcodec', 'mjpeg',
         '-framerate', String(FPS),
         '-i', '-', 
 
-        // استقبال الصوت بتكرار لا نهائي
         ...(hasAudio ? ['-re', '-stream_loop', '-1', '-i', 'temp_live_audio.wav'] : []),
         
         '-map', '0:v:0',
@@ -110,14 +108,15 @@ async function startLiveStream() {
         }
     });
 
-    // تشغيل الكانفاس داخل المتصفح
+    console.log("4. تنظيف واجهة المتصفح وبدء ضخ الفريمات...");
+    
+    // إجبار المتصفح على إخفاء أي واجهات تحكم وبدء التزامن الدقيق
     await page.evaluate(() => {
-        if (typeof startPreviewLoop === 'function') startPreviewLoop();
+        if (typeof window.startHeadlessLiveStream === 'function') {
+            window.startHeadlessLiveStream();
+        }
     });
 
-    console.log("4. ربط المتصفح بـ FFmpeg وبدء البث اللحظي...");
-    
-    // سحب الفريمات باستخدام الـ CDP (سريع جداً)
     const client = await page.target().createCDPSession();
     await client.send('Page.startScreencast', { 
         format: 'jpeg', 
@@ -127,10 +126,8 @@ async function startLiveStream() {
 
     client.on('Page.screencastFrame', async (frameObject) => {
         if (ffmpeg.stdin.writable) {
-            // تحويل Base64 إلى Buffer وضخه مباشرة
             ffmpeg.stdin.write(Buffer.from(frameObject.data, 'base64'));
         }
-        // إشعار للاستلام الفريم القادم
         await client.send('Page.screencastFrameAck', { sessionId: frameObject.sessionId }).catch(()=>{});
     });
 
