@@ -9,11 +9,10 @@ on:
         default: 'dummy_test'
         type: choice
         options:
-          - dummy_test  # بث وهمي لمدة دقيقة واختبار التزامن والرفع لـ Releases
-          - test_fps    # اختبار قدرة السيرفر على ضخ الفريمات
-          - live        # بث مباشر حقيقي لليوتيوب
+          - dummy_test  # يسجل دقيقة ويرفعها في Releases لتتأكد من الصوت والصورة
+          - live        # يشغل البث المباشر الحقيقي على يوتيوب
+          - test_fps    # يقيس سرعة الفريمات في الثانية فقط
 
-# إعطاء صلاحية رفع الملفات للـ Releases
 permissions:
   contents: write
 
@@ -31,24 +30,15 @@ jobs:
         with:
           node-version: 20
 
-      - name: 3. تثبيت FFmpeg والحزم البرمجية
+      - name: 3. تثبيت FFmpeg والحزم
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           npm install
 
-      - name: 4. [وضع قياس الفريمات]
-        if: ${{ github.event.inputs.mode == 'test_fps' }}
-        run: node test-fps.js
-
-      - name: 5. [وضع البث الوهمي واختبار التزامن والرفع للـ Releases]
-        if: ${{ github.event.inputs.mode == 'dummy_test' }}
+      - name: 4. تشغيل المحرك الموحد
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # توكن جيتهاب التلقائي للرفع
-        run: node stream-test.js
-
-      - name: 6. [وضع البث المباشر الحقيقي لليوتيوب]
-        if: ${{ github.event.inputs.mode == 'live' }}
-        env:
+          MODE: ${{ github.event.inputs.mode }}
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node stream-live.js
