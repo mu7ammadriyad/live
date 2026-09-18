@@ -26,7 +26,7 @@ function startLocalServer() {
 
 async function startLiveStream() {
     console.log("==========================================");
-    console.log("🚀 بدء محرك البث اللحظي (Perfect Sync Engine)...");
+    console.log("🚀 بدء محرك البث اللحظي المتزامن (Strict Frame Pumper)...");
     console.log("==========================================");
 
     const server = await startLocalServer();
@@ -67,35 +67,26 @@ async function startLiveStream() {
         console.log("✓ تم استخراج ملف الصوت للمزامنة.");
     }
 
-    console.log("3. تجهيز خط أنابيب FFmpeg للمزامنة الصارمة...");
-    
-    // ترتيب المداخل لضمان التزامن
-    const videoInputIndex = hasAudio ? '1' : '0';
-    const audioInputIndex = '0';
-
+    console.log("3. تجهيز خط أنابيب FFmpeg...");
     const ffmpegArgs = [
         '-y',
         '-loglevel', 'warning',
-
-        // [المدخل 0]: الصوت (هو التوقيت الماستر، يقرأ بسرعة حقيقية ويتكرر)
-        ...(hasAudio ? ['-re', '-stream_loop', '-1', '-i', 'temp_live_audio.wav'] : []),
         
-        // [المدخل 1]: الصورة 
-        // السر هنا: استخدام ساعة السيرفر الحقيقية كطابع زمني للفريمات لمنع أي تسريع!
-        '-use_wallclock_as_timestamps', '1',
+        // إعدادات مدخل الفيديو (استقبال من الـ Pumper)
         '-f', 'image2pipe',
         '-vcodec', 'mjpeg',
+        '-framerate', String(FPS),
         '-i', '-', 
-        
-        // خريطة الدمج
-        '-map', `${videoInputIndex}:v:0`,
-        ...(hasAudio ? ['-map', `${audioInputIndex}:a:0`] : []),
 
-        // ترميز الفيديو مع الحفاظ على التزامن
+        // إعدادات مدخل الصوت (سرعة حقيقية وتكرار لا نهائي)
+        ...(hasAudio ? ['-re', '-stream_loop', '-1', '-i', 'temp_live_audio.wav'] : []),
+        
+        '-map', '0:v:0',
+        ...(hasAudio ? ['-map', '1:a:0'] : []),
+
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
-        '-r', String(FPS), // إجبار الخرج على 30 فريم (سينسخ الفريمات الناقصة لضبط الصوت)
         '-b:v', '3000k',
         '-maxrate', '3500k',
         '-bufsize', '7000k',
@@ -119,9 +110,9 @@ async function startLiveStream() {
         }
     });
 
-    console.log("4. تنظيف واجهة المتصفح وبدء ضخ الفريمات...");
+    console.log("4. بدء المزامنة الرياضية الصارمة (Mathematical Sync)...");
     
-    // إخفاء الأزرار وبدء العرض المتزامن
+    // إخفاء الواجهات وبدء العرض
     await page.evaluate(() => {
         if (typeof window.startHeadlessLiveStream === 'function') {
             window.startHeadlessLiveStream();
@@ -135,15 +126,45 @@ async function startLiveStream() {
         everyNthFrame: 1 
     });
 
+    let lastFrameBuffer = null;
+
     client.on('Page.screencastFrame', async (frameObject) => {
-        if (ffmpeg.stdin.writable) {
-            ffmpeg.stdin.write(Buffer.from(frameObject.data, 'base64'));
-        }
+        lastFrameBuffer = Buffer.from(frameObject.data, 'base64');
         await client.send('Page.screencastFrameAck', { sessionId: frameObject.sessionId }).catch(()=>{});
     });
 
+    // انتظار وصول أول فريم لضمان عدم وجود شاشة سوداء
+    while (!lastFrameBuffer) {
+        await new Promise(r => setTimeout(r, 50));
+    }
+
+    // =========================================================
+    // ⚙️ المحرك السري: ضخ الفريمات بشكل إجباري 30 مرة في الثانية
+    // =========================================================
+    const startStreamTime = Date.now();
+    let framesSent = 0;
+
+    const pumperInterval = setInterval(() => {
+        if (!ffmpeg.stdin.writable) return;
+
+        const now = Date.now();
+        const elapsedSec = (now - startStreamTime) / 1000;
+        
+        // حساب كم فريم كان يجب أن يُرسل حتى هذه اللحظة بالضبط
+        const targetFrames = Math.floor(elapsedSec * FPS);
+        
+        // إذا كان السيرفر متأخراً، أرسل الفريمات الناقصة (نسخ الفريم الأخير)
+        const framesToPush = targetFrames - framesSent;
+
+        for (let i = 0; i < framesToPush; i++) {
+            ffmpeg.stdin.write(lastFrameBuffer);
+            framesSent++;
+        }
+    }, 10); // يفحص الوقت كل 10 مللي ثانية ليضمن الدقة القصوى
+
     process.on('SIGINT', () => {
         console.log("\nإيقاف البث...");
+        clearInterval(pumperInterval);
         ffmpeg.stdin.end();
         browser.close();
         server.close();
