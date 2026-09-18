@@ -1,30 +1,55 @@
-name: 24/7 YouTube Quran Live Stream
+name: Quran Live Stream Engine
 
 on:
-  workflow_dispatch: # تشغيل يدوي بضغطة زر
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'اختر وضع التشغيل'
+        required: true
+        default: 'dummy_test'
+        type: choice
+        options:
+          - dummy_test  # بث وهمي لمدة دقيقة واختبار التزامن
+          - test_fps    # اختبار قدرة السيرفر على ضخ الفريمات
+          - live        # بث مباشر حقيقي لليوتيوب
 
 jobs:
-  stream:
+  broadcaster:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # أقصى مدة للـ Job في GitHub Actions (6 ساعات)
+    timeout-minutes: 360 
 
     steps:
-      - name: 1. تنزيل الكود (Checkout Repository)
+      - name: 1. تنزيل ملفات المشروع
         uses: actions/checkout@v4
 
-      - name: 2. تثبيت Node.js
+      - name: 2. إعداد بيئة Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: 3. تثبيت FFmpeg والمتصفحات
+      - name: 3. تثبيت FFmpeg والحزم البرمجية
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          npm install puppeteer
+          npm install
 
-      - name: 4. بدء تشغيل البث المباشر اللحظي إلى YouTube
+      - name: 4. [وضع قياس الفريمات]
+        if: ${{ github.event.inputs.mode == 'test_fps' }}
+        run: node test-fps.js
+
+      - name: 5. [وضع البث الوهمي واختبار التزامن]
+        if: ${{ github.event.inputs.mode == 'dummy_test' }}
+        run: node stream-test.js
+
+      - name: 6. رفع ملف البث الوهمي كـ Artifact (للمشاهدة)
+        if: ${{ github.event.inputs.mode == 'dummy_test' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stream-Sync-Test-Video
+          path: live_test_output.mp4
+
+      - name: 7. [وضع البث المباشر الحقيقي لليوتيوب]
+        if: ${{ github.event.inputs.mode == 'live' }}
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
-        run: |
-          node stream-live.js
+        run: node stream-live.js
