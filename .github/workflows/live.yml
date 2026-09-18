@@ -9,9 +9,13 @@ on:
         default: 'dummy_test'
         type: choice
         options:
-          - dummy_test  # بث وهمي لمدة دقيقة واختبار التزامن
+          - dummy_test  # بث وهمي لمدة دقيقة واختبار التزامن والرفع لـ Releases
           - test_fps    # اختبار قدرة السيرفر على ضخ الفريمات
           - live        # بث مباشر حقيقي لليوتيوب
+
+# إعطاء صلاحية رفع الملفات للـ Releases
+permissions:
+  contents: write
 
 jobs:
   broadcaster:
@@ -37,18 +41,13 @@ jobs:
         if: ${{ github.event.inputs.mode == 'test_fps' }}
         run: node test-fps.js
 
-      - name: 5. [وضع البث الوهمي واختبار التزامن]
+      - name: 5. [وضع البث الوهمي واختبار التزامن والرفع للـ Releases]
         if: ${{ github.event.inputs.mode == 'dummy_test' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # توكن جيتهاب التلقائي للرفع
         run: node stream-test.js
 
-      - name: 6. رفع ملف البث الوهمي كـ Artifact (للمشاهدة)
-        if: ${{ github.event.inputs.mode == 'dummy_test' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: Stream-Sync-Test-Video
-          path: live_test_output.mp4
-
-      - name: 7. [وضع البث المباشر الحقيقي لليوتيوب]
+      - name: 6. [وضع البث المباشر الحقيقي لليوتيوب]
         if: ${{ github.event.inputs.mode == 'live' }}
         env:
           YOUTUBE_STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
