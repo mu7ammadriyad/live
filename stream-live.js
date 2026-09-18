@@ -4,8 +4,6 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 
-const STREAM_KEY = process.env.YOUTUBE_STREAM_KEY || "YOUR_STREAM_KEY_HERE";
-const RTMP_DESTINATION = `rtmp://a.rtmp.youtube.com/live2/${STREAM_KEY}`;
 const FPS = 30;
 
 function startLocalServer() {
@@ -24,15 +22,14 @@ function startLocalServer() {
     });
 }
 
-async function startLiveStream() {
+async function startDummyStream() {
     console.log("==========================================");
-    console.log("🚀 بدء محرك البث اللحظي المتزامن (Strict Frame Pumper)...");
+    console.log("🛠️ بدء محرك البث الوهمي (Local Dummy Stream)...");
     console.log("==========================================");
 
     const server = await startLocalServer();
     const port = server.address().port;
 
-    console.log(`1. تشغيل المتصفح الخفي...`);
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
@@ -49,14 +46,8 @@ async function startLiveStream() {
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: 1920 });
-    page.on('console', msg => console.log(`[Browser]: ${msg.text()}`));
     
-    console.log("2. فتح صفحة المشهد...");
-    await page.goto(`http://127.0.0.1:${port}/scene.html`, { 
-        waitUntil: 'domcontentloaded',
-        timeout: 120000 
-    });
-
+    await page.goto(`http://127.0.0.1:${port}/scene.html`, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await page.waitForFunction(() => window.renderStatus === 'ready', { timeout: 120000 });
     console.log("✓ تم تجهيز الكانفاس والمشهد!");
 
@@ -64,10 +55,10 @@ async function startLiveStream() {
     const hasAudio = !!audioBase64;
     if (hasAudio) {
         fs.writeFileSync('temp_live_audio.wav', Buffer.from(audioBase64, 'base64'));
-        console.log("✓ تم استخراج ملف الصوت للمزامنة.");
     }
 
-    console.log("3. تجهيز خط أنابيب FFmpeg...");
+    console.log("3. تجهيز خط أنابيب FFmpeg لتسجيل بث وهمي (دقيقة واحدة)...");
+    
     const ffmpegArgs = [
         '-y',
         '-loglevel', 'warning',
@@ -78,12 +69,13 @@ async function startLiveStream() {
         '-framerate', String(FPS),
         '-i', '-', 
 
-        // إعدادات مدخل الصوت (سرعة حقيقية وتكرار لا نهائي)
-        ...(hasAudio ? ['-re', '-stream_loop', '-1', '-i', 'temp_live_audio.wav'] : []),
+        // إعدادات الصوت
+        ...(hasAudio ? ['-re', '-i', 'temp_live_audio.wav'] : []),
         
         '-map', '0:v:0',
         ...(hasAudio ? ['-map', '1:a:0'] : []),
 
+        // ترميز مطابق تماماً لإعدادات البث المباشر
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
@@ -92,11 +84,13 @@ async function startLiveStream() {
         '-bufsize', '7000k',
         '-pix_fmt', 'yuv420p',
         '-g', String(FPS * 2),
-        
         ...(hasAudio ? ['-c:a', 'aac', '-b:a', '128k', '-ar', '44100'] : []),
         
-        '-f', 'flv',
-        RTMP_DESTINATION
+        // تحديد المدة بـ 60 ثانية فقط للاختبار
+        '-t', '60',
+        
+        // الحفظ كملف MP4 بدلاً من الإرسال ليوتيوب
+        'live_test_output.mp4'
     ];
 
     const ffmpeg = spawn('ffmpeg', ffmpegArgs);
@@ -104,15 +98,12 @@ async function startLiveStream() {
     ffmpeg.stderr.on('data', (d) => {
         const msg = d.toString();
         if (msg.includes('frame=')) {
-            process.stdout.write(`\r[Live RTMP]: ${msg.trim()}`);
-        } else {
-            console.log(`[FFmpeg]: ${msg.trim()}`);
+            process.stdout.write(`\r[Dummy Stream]: ${msg.trim()}`);
         }
     });
 
-    console.log("4. بدء المزامنة الرياضية الصارمة (Mathematical Sync)...");
+    console.log("4. بدء ضخ الفريمات باستخدام (Strict Frame Pumper)...");
     
-    // إخفاء الواجهات وبدء العرض
     await page.evaluate(() => {
         if (typeof window.startHeadlessLiveStream === 'function') {
             window.startHeadlessLiveStream();
@@ -120,59 +111,45 @@ async function startLiveStream() {
     });
 
     const client = await page.target().createCDPSession();
-    await client.send('Page.startScreencast', { 
-        format: 'jpeg', 
-        quality: 85,
-        everyNthFrame: 1 
-    });
+    await client.send('Page.startScreencast', { format: 'jpeg', quality: 85, everyNthFrame: 1 });
 
     let lastFrameBuffer = null;
-
     client.on('Page.screencastFrame', async (frameObject) => {
         lastFrameBuffer = Buffer.from(frameObject.data, 'base64');
         await client.send('Page.screencastFrameAck', { sessionId: frameObject.sessionId }).catch(()=>{});
     });
 
-    // انتظار وصول أول فريم لضمان عدم وجود شاشة سوداء
     while (!lastFrameBuffer) {
         await new Promise(r => setTimeout(r, 50));
     }
 
-    // =========================================================
-    // ⚙️ المحرك السري: ضخ الفريمات بشكل إجباري 30 مرة في الثانية
-    // =========================================================
     const startStreamTime = Date.now();
     let framesSent = 0;
 
     const pumperInterval = setInterval(() => {
         if (!ffmpeg.stdin.writable) return;
-
         const now = Date.now();
         const elapsedSec = (now - startStreamTime) / 1000;
-        
-        // حساب كم فريم كان يجب أن يُرسل حتى هذه اللحظة بالضبط
         const targetFrames = Math.floor(elapsedSec * FPS);
-        
-        // إذا كان السيرفر متأخراً، أرسل الفريمات الناقصة (نسخ الفريم الأخير)
         const framesToPush = targetFrames - framesSent;
 
         for (let i = 0; i < framesToPush; i++) {
             ffmpeg.stdin.write(lastFrameBuffer);
             framesSent++;
         }
-    }, 10); // يفحص الوقت كل 10 مللي ثانية ليضمن الدقة القصوى
+    }, 10);
 
-    process.on('SIGINT', () => {
-        console.log("\nإيقاف البث...");
+    // عند انتهاء FFmpeg من تسجيل الـ 60 ثانية، سيغلق نفسه
+    ffmpeg.on('close', () => {
+        console.log("\n✅ انتهى البث الوهمي! تم حفظ الملف: live_test_output.mp4");
         clearInterval(pumperInterval);
-        ffmpeg.stdin.end();
         browser.close();
         server.close();
         process.exit(0);
     });
 }
 
-startLiveStream().catch((err) => {
-    console.error("فشل تشغيل البث:", err);
+startDummyStream().catch((err) => {
+    console.error("فشل التشغيل:", err);
     process.exit(1);
 });
