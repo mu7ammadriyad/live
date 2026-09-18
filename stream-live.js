@@ -26,7 +26,7 @@ function startLocalServer() {
 
 async function startLiveStream() {
     console.log("==========================================");
-    console.log("🚀 بدء محرك البث اللحظي المطور (Clean Canvas & Perfect Sync)...");
+    console.log("🚀 بدء محرك البث اللحظي (Perfect Sync Engine)...");
     console.log("==========================================");
 
     const server = await startLocalServer();
@@ -67,24 +67,35 @@ async function startLiveStream() {
         console.log("✓ تم استخراج ملف الصوت للمزامنة.");
     }
 
-    console.log("3. تجهيز خط أنابيب FFmpeg...");
+    console.log("3. تجهيز خط أنابيب FFmpeg للمزامنة الصارمة...");
+    
+    // ترتيب المداخل لضمان التزامن
+    const videoInputIndex = hasAudio ? '1' : '0';
+    const audioInputIndex = '0';
+
     const ffmpegArgs = [
         '-y',
         '-loglevel', 'warning',
-        
-        '-f', 'image2pipe',
-        '-vcodec', 'mjpeg',
-        '-framerate', String(FPS),
-        '-i', '-', 
 
+        // [المدخل 0]: الصوت (هو التوقيت الماستر، يقرأ بسرعة حقيقية ويتكرر)
         ...(hasAudio ? ['-re', '-stream_loop', '-1', '-i', 'temp_live_audio.wav'] : []),
         
-        '-map', '0:v:0',
-        ...(hasAudio ? ['-map', '1:a:0'] : []),
+        // [المدخل 1]: الصورة 
+        // السر هنا: استخدام ساعة السيرفر الحقيقية كطابع زمني للفريمات لمنع أي تسريع!
+        '-use_wallclock_as_timestamps', '1',
+        '-f', 'image2pipe',
+        '-vcodec', 'mjpeg',
+        '-i', '-', 
+        
+        // خريطة الدمج
+        '-map', `${videoInputIndex}:v:0`,
+        ...(hasAudio ? ['-map', `${audioInputIndex}:a:0`] : []),
 
+        // ترميز الفيديو مع الحفاظ على التزامن
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
+        '-r', String(FPS), // إجبار الخرج على 30 فريم (سينسخ الفريمات الناقصة لضبط الصوت)
         '-b:v', '3000k',
         '-maxrate', '3500k',
         '-bufsize', '7000k',
@@ -110,7 +121,7 @@ async function startLiveStream() {
 
     console.log("4. تنظيف واجهة المتصفح وبدء ضخ الفريمات...");
     
-    // إجبار المتصفح على إخفاء أي واجهات تحكم وبدء التزامن الدقيق
+    // إخفاء الأزرار وبدء العرض المتزامن
     await page.evaluate(() => {
         if (typeof window.startHeadlessLiveStream === 'function') {
             window.startHeadlessLiveStream();
