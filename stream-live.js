@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -63,7 +63,7 @@ async function startDummyStream() {
         '-y',
         '-loglevel', 'warning',
         
-        // إعدادات مدخل الفيديو (استقبال من الـ Pumper)
+        // إعدادات مدخل الفيديو
         '-f', 'image2pipe',
         '-vcodec', 'mjpeg',
         '-framerate', String(FPS),
@@ -89,7 +89,7 @@ async function startDummyStream() {
         // تحديد المدة بـ 60 ثانية فقط للاختبار
         '-t', '60',
         
-        // الحفظ كملف MP4 بدلاً من الإرسال ليوتيوب
+        // الحفظ كملف MP4 
         'live_test_output.mp4'
     ];
 
@@ -102,7 +102,7 @@ async function startDummyStream() {
         }
     });
 
-    console.log("4. بدء ضخ الفريمات باستخدام (Strict Frame Pumper)...");
+    console.log("\n4. بدء ضخ الفريمات باستخدام (Strict Frame Pumper)...");
     
     await page.evaluate(() => {
         if (typeof window.startHeadlessLiveStream === 'function') {
@@ -139,10 +139,26 @@ async function startDummyStream() {
         }
     }, 10);
 
-    // عند انتهاء FFmpeg من تسجيل الـ 60 ثانية، سيغلق نفسه
+    // ========================================================
+    // رفع الفيديو إلى GITHUB RELEASES بعد انتهاء FFmpeg
+    // ========================================================
     ffmpeg.on('close', () => {
-        console.log("\n✅ انتهى البث الوهمي! تم حفظ الملف: live_test_output.mp4");
+        console.log("\n\n✅ انتهى تسجيل البث الوهمي بنجاح! تم حفظ: live_test_output.mp4");
         clearInterval(pumperInterval);
+        
+        console.log("🚀 جاري رفع الفيديو إلى صفحة Releases في مستودعك...");
+        try {
+            const tagName = `Test-Sync-${Date.now()}`;
+            const command = `gh release create ${tagName} live_test_output.mp4 --title "اختبار تزامن البث (${new Date().toLocaleString()})" --notes "ملف اختبار لدقيقة واحدة للتأكد من تزامن الصوت مع الآيات والتفسير."`;
+            
+            // تنفيذ أمر الرفع عبر التيرمينال
+            execSync(command, { stdio: 'inherit' });
+            
+            console.log("\n🎉 تم رفع الفيديو بنجاح! اذهب إلى صفحة Releases في جيتهاب لتحميله.");
+        } catch (error) {
+            console.error("\n❌ فشل رفع الملف إلى Releases. تأكد من أنك أعطيت صلاحيات 'contents: write' في ملف الـ yml.");
+        }
+
         browser.close();
         server.close();
         process.exit(0);
