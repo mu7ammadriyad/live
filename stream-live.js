@@ -61,21 +61,19 @@ async function startDummyStream() {
     
     const ffmpegArgs = [
         '-y',
-        '-loglevel', 'warning',
+        '-loglevel', 'warning', // سيقوم بطباعة أي أخطاء من FFmpeg لو حدثت
         
-        // إعدادات مدخل الفيديو
         '-f', 'image2pipe',
         '-vcodec', 'mjpeg',
         '-framerate', String(FPS),
         '-i', '-', 
 
-        // إعدادات الصوت
-        ...(hasAudio ? ['-re', '-i', 'temp_live_audio.wav'] : []),
+        // تأكدنا من وضع التكرار اللانهائي للصوت حتى لا ينتهي قبل الـ 60 ثانية
+        ...(hasAudio ? ['-stream_loop', '-1', '-re', '-i', 'temp_live_audio.wav'] : []),
         
         '-map', '0:v:0',
         ...(hasAudio ? ['-map', '1:a:0'] : []),
 
-        // ترميز مطابق تماماً لإعدادات البث المباشر
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
@@ -86,23 +84,35 @@ async function startDummyStream() {
         '-g', String(FPS * 2),
         ...(hasAudio ? ['-c:a', 'aac', '-b:a', '128k', '-ar', '44100'] : []),
         
-        // تحديد المدة بـ 60 ثانية فقط للاختبار
-        '-t', '60',
+        '-t', '60', // إيقاف التسجيل بعد 60 ثانية
         
-        // الحفظ كملف MP4 
         'live_test_output.mp4'
     ];
 
     const ffmpeg = spawn('ffmpeg', ffmpegArgs);
 
+    // ==========================================
+    // معالجة خطأ EPIPE عشان الـ Node.js ميقفلش
+    // ==========================================
+    ffmpeg.stdin.on('error', (e) => {
+        if (e.code === 'EPIPE') {
+            // لا تفعل شيئاً، هذا يعني أن FFmpeg أنهى الـ 60 ثانية المطلوبة وقفل الملف
+        } else {
+            console.error('FFmpeg Stdin Error:', e);
+        }
+    });
+
     ffmpeg.stderr.on('data', (d) => {
         const msg = d.toString();
         if (msg.includes('frame=')) {
             process.stdout.write(`\r[Dummy Stream]: ${msg.trim()}`);
+        } else {
+            // إظهار أي رسائل تحذير من FFmpeg لتتبع الأخطاء
+            console.log(`\n[FFmpeg Log]: ${msg.trim()}`);
         }
     });
 
-    console.log("\n4. بدء ضخ الفريمات باستخدام (Strict Frame Pumper)...");
+    console.log("4. بدء ضخ الفريمات باستخدام (Strict Frame Pumper)...");
     
     await page.evaluate(() => {
         if (typeof window.startHeadlessLiveStream === 'function') {
@@ -127,15 +137,21 @@ async function startDummyStream() {
     let framesSent = 0;
 
     const pumperInterval = setInterval(() => {
-        if (!ffmpeg.stdin.writable) return;
+        if (!ffmpeg.stdin.writable) return; // توقف عن الضخ إذا تم إغلاق الأنبوب
+        
         const now = Date.now();
         const elapsedSec = (now - startStreamTime) / 1000;
         const targetFrames = Math.floor(elapsedSec * FPS);
         const framesToPush = targetFrames - framesSent;
 
         for (let i = 0; i < framesToPush; i++) {
-            ffmpeg.stdin.write(lastFrameBuffer);
-            framesSent++;
+            try {
+                ffmpeg.stdin.write(lastFrameBuffer);
+                framesSent++;
+            } catch(e) {
+                // التقاط أي أخطاء استثنائية عند الكتابة
+                break;
+            }
         }
     }, 10);
 
@@ -144,7 +160,7 @@ async function startDummyStream() {
     // ========================================================
     ffmpeg.on('close', () => {
         console.log("\n\n✅ انتهى تسجيل البث الوهمي بنجاح! تم حفظ: live_test_output.mp4");
-        clearInterval(pumperInterval);
+        clearInterval(pumperInterval); // إيقاف العداد
         
         console.log("🚀 جاري رفع الفيديو إلى صفحة Releases في مستودعك...");
         try {
@@ -156,7 +172,8 @@ async function startDummyStream() {
             
             console.log("\n🎉 تم رفع الفيديو بنجاح! اذهب إلى صفحة Releases في جيتهاب لتحميله.");
         } catch (error) {
-            console.error("\n❌ فشل رفع الملف إلى Releases. تأكد من أنك أعطيت صلاحيات 'contents: write' في ملف الـ yml.");
+            console.error("\n❌ فشل رفع الملف إلى Releases (ربما بسبب عدم وجود صلاحيات Write في ملف الـ YML).");
+            console.log("💡 لا تقلق، ستجد الفيديو في قسم (Artifacts) أسفل صفحة الـ Action الحالية لتقوم بتحميله.");
         }
 
         browser.close();
